@@ -2,6 +2,9 @@
 #include <cstdlib>
 #include <ctime>
 #include <algorithm>
+#include <cstdio>
+#include <array>
+#include <sstream>
 using namespace std;
 
 const int ROWS = 6;
@@ -289,6 +292,44 @@ int minimax(int depth, bool isMaximizing, int aiPlayer) {
     }
 }
 
+int getONNXAIMove() {
+    // Build command: echo board → python
+    ostringstream cmd;
+    cmd << "echo ";
+    for (int r = 0; r < ROWS; r++) {
+        for (int c = 0; c < COLS; c++) {
+            cmd << board[r][c] << " ";
+        }
+    }
+    cmd << "| python C:\\Users\\mikeg\\githubProjects\\connnect4_ai\\connect4_ai\\connect4_ai.py";
+
+    // Open pipe to read Python's stdout
+    FILE* pipe = _popen(cmd.str().c_str(), "r");
+    if (!pipe) {
+        cerr << "Error: could not open pipe to Python AI.\n";
+        // fallback random move
+        int aiMove;
+        do {
+            aiMove = rand() % COLS;
+        } while (isColumnFull(aiMove));
+        return aiMove;
+    }
+
+    int aiMove = -1;
+    fscanf(pipe, "%d", &aiMove);
+    _pclose(pipe);
+
+    // Validate move
+    if (aiMove < 0 || aiMove >= COLS || isColumnFull(aiMove)) {
+        cerr << "Python AI gave invalid move. Falling back to random.\n";
+        do {
+            aiMove = rand() % COLS;
+        } while (isColumnFull(aiMove));
+    }
+
+    return aiMove;
+}
+
 
 int main() {
     srand(time(0));
@@ -357,6 +398,10 @@ int main() {
 
                 column = bestMove; // <-- this is the move AI actually plays
                 cout << "AI chooses column " << (column + 1) << "\n";
+            }  else if (aiDifficulty == 3) {
+                // ONNX AI
+                column = getONNXAIMove();
+                cout << "ONNX AI chooses column " << (column + 1) << "\n";
             }
         }
 
