@@ -16,7 +16,7 @@ class Connect4Net(nn.Module):
 
 # Create model and load trained weights
 model = Connect4Net()
-model.load_state_dict(torch.load("connect4_ai.pth"))
+model.load_state_dict(torch.load("connect4_dqn.pth"))
 model.eval()
 
 # Export to ONNX
@@ -24,7 +24,7 @@ dummy_input = torch.zeros(1, 6, 7)
 torch.onnx.export(
     model,
     dummy_input,
-    "connect4_ai_minimax.onnx",
+    "connect4_ai_dqn.onnx",
     input_names=["board"],
     output_names=["move_scores"],
     dynamic_axes={"board": {0: "batch"}}

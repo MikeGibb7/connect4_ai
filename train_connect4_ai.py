@@ -4,6 +4,7 @@ import torch.optim as optim
 import random
 import numpy as np
 import math
+from collections import deque
 
 # --- Connect4 Game Environment ---
 ROWS, COLS = 6, 7
@@ -65,6 +66,26 @@ class Connect4Net(nn.Module):
         x = torch.relu(self.fc1(x))
         x = torch.relu(self.fc2(x))
         return self.fc3(x)
+
+# --- Replay Buffer ---
+class ReplayBuffer:
+    def __init__(self, capacity=50000):
+        self.buffer = deque(maxlen=capacity)
+
+    def push(self, state, action, reward, next_state, done):
+        self.buffer.append((state, action, reward, next_state, done))
+
+    def sample(self, batch_size):
+        batch = random.sample(self.buffer, batch_size)
+        states, actions, rewards, next_states, dones = zip(*batch)
+        return (torch.tensor(states, dtype=torch.float32),
+                torch.tensor(actions, dtype=torch.int64),
+                torch.tensor(rewards, dtype=torch.float32),
+                torch.tensor(next_states, dtype=torch.float32),
+                torch.tensor(dones, dtype=torch.float32))
+
+    def __len__(self):
+        return len(self.buffer)
 
 # --- Board Evaluation ---
 def count_n_in_a_row(board, player, n):
@@ -163,65 +184,79 @@ def minimax(board, depth, alpha, beta, maximizingPlayer):
                 break
         return best_col, value
 
-# --- Training with Minimax Opponent ---
-def train_model(episodes=1000, gamma=0.9, minimax_depth=4):
-    model = Connect4Net()
-    optimizer = optim.Adam(model.parameters(), lr=0.001)
+# --- DQN Training with Replay Buffer ---
+def train_dqn(episodes=1000, gamma=0.95, batch_size=64, minimax_depth=3):
+    policy_net = Connect4Net()
+    target_net = Connect4Net()
+    target_net.load_state_dict(policy_net.state_dict())
+    target_net.eval()
+
+    optimizer = optim.Adam(policy_net.parameters(), lr=0.001)
     loss_fn = nn.MSELoss()
+    buffer = ReplayBuffer()
+
+    epsilon = 1.0  # exploration rate
+    epsilon_min = 0.1
+    epsilon_decay = 0.995
 
     for ep in range(episodes):
         board = create_board()
         game_over = False
-        player = 1  # minimax starts first
+        player = 1  # minimax starts
 
         while not game_over:
             if player == 1:
-                # Minimax move
                 col, _ = minimax(board, minimax_depth, -math.inf, math.inf, True)
             else:
-                # RL move
-                inp = torch.tensor(board.flatten(), dtype=torch.float32).unsqueeze(0)
-                preds = model(inp)
-                col = int(torch.argmax(preds))
+                state = board.flatten().astype(np.float32)
 
-                # exploration
-                if random.random() < 0.2:
+                if random.random() < epsilon:
                     col = random.choice(get_valid_locations(board))
+                else:
+                    with torch.no_grad():
+                        q_values = policy_net(torch.tensor(state).unsqueeze(0))
+                        col = int(torch.argmax(q_values))
 
                 if not is_valid_location(board, col):
-                    game_over = True
-                    continue
+                    col = random.choice(get_valid_locations(board))
 
-            # Apply move
-            row = get_next_open_row(board, col)
-            drop_piece(board, row, col, player)
+                row = get_next_open_row(board, col)
+                drop_piece(board, row, col, 2)
 
-            # RL learns only on its own turns
-            if player == 2:
-                current_reward = evaluate_board(board, player)
+                reward = evaluate_board(board, 2)
+                next_state = board.flatten().astype(np.float32)
+                done = check_win(board, 2) or check_win(board, 1) or isBoardFull(board)
 
-                target = preds.clone()
-                with torch.no_grad():
-                    next_inp = torch.tensor(board.flatten(), dtype=torch.float32).unsqueeze(0)
-                    next_preds = model(next_inp)
-                    max_future = torch.max(next_preds)
-                target[0, col] = current_reward + gamma * max_future
+                buffer.push(state, col, reward, next_state, done)
 
-                loss = loss_fn(preds, target)
-                optimizer.zero_grad()
-                loss.backward()
-                optimizer.step()
+                if len(buffer) > batch_size:
+                    states, actions, rewards, next_states, dones = buffer.sample(batch_size)
+
+                    q_values = policy_net(states)
+                    state_action_values = q_values.gather(1, actions.unsqueeze(1)).squeeze()
+
+                    with torch.no_grad():
+                        next_q_values = target_net(next_states).max(1)[0]
+                        expected_q_values = rewards + gamma * next_q_values * (1 - dones)
+
+                    loss = loss_fn(state_action_values, expected_q_values)
+                    optimizer.zero_grad()
+                    loss.backward()
+                    optimizer.step()
 
             if check_win(board, player) or isBoardFull(board):
                 game_over = True
 
             player = 2 if player == 1 else 1
 
-        if ep % 50 == 0:
-            print(f"Episode {ep}/{episodes}")
+        epsilon = max(epsilon_min, epsilon * epsilon_decay)
 
-    torch.save(model.state_dict(), "connect4_ai.pth")
-    print("✅ Training done vs minimax!")
+        if ep % 20 == 0:
+            target_net.load_state_dict(policy_net.state_dict())
+            print(f"Episode {ep}/{episodes}, epsilon={epsilon:.3f}")
+
+    torch.save(policy_net.state_dict(), "connect4_dqn.pth")
+    print("✅ DQN Training done!")
 
 if __name__ == "__main__":
-    train_model()
+    train_dqn()
