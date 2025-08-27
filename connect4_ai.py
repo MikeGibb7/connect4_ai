@@ -6,7 +6,7 @@ import os
 ROWS, COLS = 6, 7
 
 # Load ONNX model once
-model_path = r"C:\Users\mikeg\githubProjects\connnect4_ai\connect4_ai\connect4_ai.onnx"
+model_path = r"C:\Users\mikeg\githubProjects\connnect4_ai\connect4_ai\connect4_ai_minimax.onnx"
 session = ort.InferenceSession(model_path)
 
 def pick_move(board):
