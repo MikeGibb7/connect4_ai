@@ -24,7 +24,7 @@ dummy_input = torch.zeros(1, 6, 7)
 torch.onnx.export(
     model,
     dummy_input,
-    "connect4_ai.onnx",
+    "connect4_ai_minimax.onnx",
     input_names=["board"],
     output_names=["move_scores"],
     dynamic_axes={"board": {0: "batch"}}

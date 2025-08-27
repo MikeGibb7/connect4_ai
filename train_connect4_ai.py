@@ -3,6 +3,7 @@ import torch.nn as nn
 import torch.optim as optim
 import random
 import numpy as np
+import math
 
 # --- Connect4 Game Environment ---
 ROWS, COLS = 6, 7
@@ -12,6 +13,9 @@ def create_board():
 
 def is_valid_location(board, col):
     return board[0][col] == 0
+
+def get_valid_locations(board):
+    return [c for c in range(COLS) if is_valid_location(board, c)]
 
 def get_next_open_row(board, col):
     for r in range(ROWS-1, -1, -1):
@@ -46,7 +50,6 @@ def check_win(board, piece):
     return False
 
 def isBoardFull(board):
-    # If the top row has any 0, the board is not full
     return not any(board[0, c] == 0 for c in range(COLS))
 
 # --- Neural Net ---
@@ -63,6 +66,7 @@ class Connect4Net(nn.Module):
         x = torch.relu(self.fc2(x))
         return self.fc3(x)
 
+# --- Board Evaluation ---
 def count_n_in_a_row(board, player, n):
     count = 0
     ROWS, COLS = board.shape
@@ -93,149 +97,131 @@ def count_n_in_a_row(board, player, n):
 
     return count
 
-def count_open_threes(board, player):
-    """Count 3-in-a-row with at least one open side"""
-    count = 0
-    ROWS, COLS = board.shape
-
-    # Horizontal open threes
-    for r in range(ROWS):
-        for c in range(COLS - 3):
-            line = board[r, c:c+4]
-            if list(line).count(player) == 3 and list(line).count(0) == 1:
-                count += 1
-
-    # Vertical open threes
-    for c in range(COLS):
-        for r in range(ROWS - 3):
-            line = board[r:r+4, c]
-            if list(line).count(player) == 3 and list(line).count(0) == 1:
-                count += 1
-
-    # Diagonal (top-left to bottom-right)
-    for r in range(ROWS - 3):
-        for c in range(COLS - 3):
-            line = [board[r+i][c+i] for i in range(4)]
-            if line.count(player) == 3 and line.count(0) == 1:
-                count += 1
-
-    # Diagonal (bottom-left to top-right)
-    for r in range(3, ROWS):
-        for c in range(COLS - 3):
-            line = [board[r-i][c+i] for i in range(4)]
-            if line.count(player) == 3 and line.count(0) == 1:
-                count += 1
-
-    return count
-
 def evaluate_board(board, player):
     reward = 0.0
-    
-    # Reward for each 2-in-a-row
-    reward += 0.1 * count_n_in_a_row(board, player, 2)
-    
-    # Reward for each 3-in-a-row
-    reward += 0.5 * count_n_in_a_row(board, player, 3)
-    
-    # Penalize if opponent has 3-in-a-row
     opponent = 2 if player == 1 else 1
+
+    reward += 0.1 * count_n_in_a_row(board, player, 2)
+    reward += 0.5 * count_n_in_a_row(board, player, 3)
     reward -= 0.5 * count_n_in_a_row(board, opponent, 3)
-    
-     # Penalize if opponent has "open threes" (3 in a row with space to complete 4)
-    reward -= 0.3 * count_open_threes(board, opponent)
+
     middle_col = COLS // 2
     for r in range(ROWS):
         if board[r][middle_col] == player:
-            reward += 0.02  # small bonus for controlling the center
-    # Reward winning board
+            reward += 0.01  
+
     if check_win(board, player):
         reward += 1.0
     if check_win(board, opponent):
         reward -= 1.0
-        
+
     return reward
 
-# --- Training (very simple self-play with random moves as baseline) ---
-def train_model(episodes=10000, gamma=0.9, load_existing=False):
+# --- Minimax Agent (Player 1) ---
+def minimax(board, depth, alpha, beta, maximizingPlayer):
+    valid_locations = get_valid_locations(board)
+    is_terminal = check_win(board, 1) or check_win(board, 2) or isBoardFull(board)
+
+    if depth == 0 or is_terminal:
+        if check_win(board, 1):
+            return (None, 1000000)
+        elif check_win(board, 2):
+            return (None, -1000000)
+        elif isBoardFull(board):
+            return (None, 0)
+        else:
+            return (None, evaluate_board(board, 1))
+
+    if maximizingPlayer:
+        value = -math.inf
+        best_col = random.choice(valid_locations)
+        for col in valid_locations:
+            row = get_next_open_row(board, col)
+            temp_board = board.copy()
+            drop_piece(temp_board, row, col, 1)
+            new_score = minimax(temp_board, depth-1, alpha, beta, False)[1]
+            if new_score > value:
+                value = new_score
+                best_col = col
+            alpha = max(alpha, value)
+            if alpha >= beta:
+                break
+        return best_col, value
+    else:
+        value = math.inf
+        best_col = random.choice(valid_locations)
+        for col in valid_locations:
+            row = get_next_open_row(board, col)
+            temp_board = board.copy()
+            drop_piece(temp_board, row, col, 2)
+            new_score = minimax(temp_board, depth-1, alpha, beta, True)[1]
+            if new_score < value:
+                value = new_score
+                best_col = col
+            beta = min(beta, value)
+            if alpha >= beta:
+                break
+        return best_col, value
+
+# --- Training with Minimax Opponent ---
+def train_model(episodes=1000, gamma=0.9, minimax_depth=4):
     model = Connect4Net()
-    if load_existing:
-        try:
-            model.load_state_dict(torch.load("connect4_ai.pth"))
-            print("✅ Loaded existing model for continued training.")
-        except FileNotFoundError:
-            print("⚠️ No existing model found, starting new model.")
     optimizer = optim.Adam(model.parameters(), lr=0.001)
     loss_fn = nn.MSELoss()
 
     for ep in range(episodes):
         board = create_board()
         game_over = False
-        player = 1
+        player = 1  # minimax starts first
 
         while not game_over:
-            # Prepare input
-            inp = torch.tensor(board.flatten(), dtype=torch.float32).unsqueeze(0)
+            if player == 1:
+                # Minimax move
+                col, _ = minimax(board, minimax_depth, -math.inf, math.inf, True)
+            else:
+                # RL move
+                inp = torch.tensor(board.flatten(), dtype=torch.float32).unsqueeze(0)
+                preds = model(inp)
+                col = int(torch.argmax(preds))
 
-            # Predict move scores
-            preds = model(inp)
-            col = int(torch.argmax(preds))  
+                # exploration
+                if random.random() < 0.2:
+                    col = random.choice(get_valid_locations(board))
 
-            # Exploration: choose random column sometimes
-            epsilon = max(0.05, 0.5 * (1 - ep / episodes))
-            if random.random() < epsilon:
-                col = random.choice([c for c in range(COLS) if is_valid_location(board, c)])
+                if not is_valid_location(board, col):
+                    game_over = True
+                    continue
 
-            if not is_valid_location(board, col):
-                # Invalid move → end the game (or just pick random)
-                game_over = True
-                continue
-
-            # Make the move
+            # Apply move
             row = get_next_open_row(board, col)
             drop_piece(board, row, col, player)
 
-            # Evaluate board for current player
-            current_reward = evaluate_board(board, player)
+            # RL learns only on its own turns
+            if player == 2:
+                current_reward = evaluate_board(board, player)
 
-            # Compute target scores
-            target = preds.clone()
-            # discounted future reward: max of predicted next state
-            with torch.no_grad():
-                next_inp = torch.tensor(board.flatten(), dtype=torch.float32).unsqueeze(0)
-                next_preds = model(next_inp)
-                max_future = torch.max(next_preds)
-            target[0, col] = current_reward + gamma * max_future
+                target = preds.clone()
+                with torch.no_grad():
+                    next_inp = torch.tensor(board.flatten(), dtype=torch.float32).unsqueeze(0)
+                    next_preds = model(next_inp)
+                    max_future = torch.max(next_preds)
+                target[0, col] = current_reward + gamma * max_future
 
-            # Backpropagate
-            loss = loss_fn(preds, target)
-            optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
+                loss = loss_fn(preds, target)
+                optimizer.zero_grad()
+                loss.backward()
+                optimizer.step()
 
-            # Check terminal state
             if check_win(board, player) or isBoardFull(board):
                 game_over = True
 
-            # Switch player
             player = 2 if player == 1 else 1
 
-        if ep % 100 == 0:
+        if ep % 50 == 0:
             print(f"Episode {ep}/{episodes}")
 
-    # Save and export
     torch.save(model.state_dict(), "connect4_ai.pth")
-    dummy_input = torch.zeros(1, ROWS, COLS)
-    torch.onnx.export(
-        model,
-        dummy_input,
-        "connect4_ai.onnx",
-        input_names=["board"],
-        output_names=["move_scores"],
-        dynamic_axes={"board": {0: "batch"}}
-    )
-    print("✅ Training done, model saved as connect4_ai.pth and connect4_ai.onnx")
+    print("✅ Training done vs minimax!")
 
 if __name__ == "__main__":
-    choice = input("Load existing AI for continued training? (y/n): ").lower()
-    load_old = choice == 'y'
-    train_model(episodes=10000, load_existing=load_old)
+    train_model()
